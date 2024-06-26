@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM template for Step Functions, SQS, and Lambda
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: batch-processing-stepFunction
+    Description: This repository contains a serverless application built using AWS Serverless Application Model (SAM). It demonstrates the power of AWS Step Functions for batch processing, leveraging S3, SQS, and Lambda.
+    Author: Jordi Tanta
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: LICENSE.txt
+    ReadmeUrl: README.md
+    Labels: ['finops', 'storage', 'stepFunction', 'batch']
+    HomePageUrl: https://github.com/cloud-seek/batch-processing-stepFunction
+    SemanticVersion: 0.0.1
+    SourceCodeUrl: https://github.com/cloud-seek/batch-processing-stepFunction
+
+
+Resources:
+  # Lambda Function
+  DataProcessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.handler
+      Runtime: nodejs20.x
+      CodeUri: lambda/
+      MemorySize: 128
+      Timeout: 60
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: input-bucket
+        - SQSSendMessagePolicy:
+            QueueName: !Ref NotificationQueue
+
+  # SQS Queue
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: Notification
+
+  # Step Function
+  MyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: MyStepFunction
+      StateMachineType: STANDARD
+      DefinitionString:
+        Fn::Sub: |
+          {
+            "StartAt": "DataProcessMap",
+            "States": {
+              "DataProcessMap": {
+                "Type": "Map",
+                "ItemProcessor": {
+                  "ProcessorConfig": {
+                    "Mode": "DISTRIBUTED",
+                    "ExecutionType": "EXPRESS"
+                  },
+                  "StartAt": "Lambda Invoke",
+                  "States": {
+                    "Lambda Invoke": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::lambda:invoke",
+                      "OutputPath": "$.Payload",
+                      "Parameters": {
+                        "Payload.$": "$",
+                        "FunctionName": "${DataProcessFunction.Arn}"
+                      },
+                      "Retry": [
+                        {
+                          "ErrorEquals": [
+                            "Lambda.ServiceException",
+                            "Lambda.AWSLambdaException",
+                            "Lambda.SdkClientException",
+                            "Lambda.TooManyRequestsException"
+                          ],
+                          "IntervalSeconds": 1,
+                          "MaxAttempts": 3,
+                          "BackoffRate": 2
+                        }
+                      ],
+                      "End": true
+                    }
+                  }
+                },
+                "ItemReader": {
+                  "Resource": "arn:aws:states:::s3:getObject",
+                  "ReaderConfig": {
+                    "InputType": "JSON"
+                  },
+                  "Parameters": {
+                    "Bucket.$": "$.bckSource",
+                    "Key.$": "$.bckKey"
+                  }
+                },
+                "ResultWriter": {
+                  "Resource": "arn:aws:states:::s3:putObject",
+                  "Parameters": {
+                    "Bucket.$": "$.bckResult",
+                    "Prefix": "/log"
+                  }
+                },
+                "MaxConcurrency": 10,
+                "End": true,
+                "Catch": [
+                  {
+                    "ErrorEquals": [
+                      "States.ALL"
+                    ],
+                    "ResultPath": "$.error",
+                    "Next": "SendToSQS"
+                  }
+                ],
+                "ToleratedFailurePercentage": 50
+              },
+              "SendToSQS": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::sqs:sendMessage",
+                "Parameters": {
+                  "QueueUrl": "${NotificationQueue.QueueUrl}",
+                  "MessageBody.$": "$.error"
+                },
+                "End": true
+              }
+            }
+          }
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+
+  # IAM Role for Step Functions
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFunctionsExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - sqs:SendMessage
+                  - s3:GetObject
+                  - s3:PutObject
+                  - states:StartExecution
+                Resource: '*'
+
+
+Outputs:
+  DataProcessFunctionArn:
+    Description: "ARN of the DataProcess function"
+    Value: !GetAtt DataProcessFunction.Arn
+  NotificationQueueUrl:
+    Description: "URL of the Notification SQS queue"
+    Value: !Ref NotificationQueue
+  StateMachineArn:
+    Description: "ARN of the Step Function"
+    Value: !Ref MyStateMachine
