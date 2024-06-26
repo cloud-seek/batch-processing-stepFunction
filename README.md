@@ -86,6 +86,16 @@ Defines the Node.js project, listing dependencies and metadata for the Lambda fu
 
 After deploying the stack, you can trigger the Step Function with an input JSON file path in S3. The Step Function will read the file, process each record in parallel using the Lambda function, and handle errors appropriately.
 
+To trigger the Step Function, you can use the following input:
+
+```json
+{
+    "bckSource": "bucket-source",
+    "bckKey": "object-key",
+    "bckResult": "bucket-result"
+}
+
+
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request if you have suggestions or improvements.
