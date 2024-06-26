@@ -94,6 +94,7 @@ To trigger the Step Function, you can use the following input:
     "bckKey": "object-key",
     "bckResult": "bucket-result"
 }
+```
 
 
 ## Contributing
